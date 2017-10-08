@@ -1,0 +1,406 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+<head>
+<style>  
+    div.padded {  
+      padding-top: 0px;  
+      padding-right: 100px;  
+      padding-bottom: 0.25in;  
+      padding-left: 100px;  
+    }  
+  </style> 
+<title>Christine Guomin Zheng  |  CS 184</title>
+<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+<link rel="stylesheet" type="text/css" href="style.css" media="screen" />
+</head>
+<body>
+<br />
+<h1 align="middle">Assignment 3: PathTracer</h1>
+    <h2 align="middle">Christine Guomin Zheng</h2>
+
+    <div class="padded">
+        <p> In this project, I explored ray generation, ray-scene intersection, acceleration, direct and indirect lighting, and some basic materials. It is very interesting to see different implementations affect the qualities of the image. I also had a long journey debugging throughout the whole project. </p>
+
+    <h2 align="middle">Part 1: Ray Generation and Intersection</h2>
+        <p> I'll begin with generating ray. In below diagram from lecture slide, we cast rays from the pinhole through the image plane and then into the scene. The image plane rendered will be the output. In this part, for each pixel in the frame, one camera ray is constructed and casted into the scene. If the ray intersects any objects, we want to compute the color of the object at the intersection point and assign the color to the corresponding pixel. </p>
+
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                    <img src="part1/RayCasting.png" width="480px" />
+                    <figcaption align="middle">Fig 1. Ray Casting</figcaption>
+                </tr>
+            </table>
+        </div>
+
+        <p> To generate rays, we need to compute the origin and direction of the ray in Camera::generate_ray function. Below is the ray formula. The origin of the ray is where the camera is in the world space. </p>
+        <p align="middle"><pre align="middle">ray = origin + t * direction</pre></p>
+        <p> We want to transform the x, y coordinates which are range between [0, 1] into a point in the image plane. So we want the bottom left to be (0, 0) and top right to be (1, 1) on the plane. The corresponding x, y can be calculated with </p>
+        <p align="middle"><pre align="middle">X = bottom_left.x + (top_right.x - bottom_left.x) * x</pre></p>
+        <p align="middle"><pre align="middle">Y = bottom_left.y + (top_right.y - bottom_left.y) * y</pre></p>
+        <p> The camera looks along the -z axis, so I set the direction z axis to be 0. This will be the ray in camera space. Multiply it by c2w matrix will transform it to world space. </p>
+
+        <p> For each pixel, we want to sample ns_aa random rays at different locations and take the average of them to cast it to the pixel. Or we can cast a single ray to the center of the pixel. This value can be changed using the command line for later on. </p>
+
+        <h3> Triangle intersect </h3>
+        <p> I used Möller-Trumbore algorithm to detect ray-triangle intersection. The intersect point is defined as </p>
+        <p align="middle"><pre align="middle">P = wA + uB + vC</pre></p>
+        where w, u, v are the barycentric coordinates and A, B, C are the triangles vertices, with condition <code> w + u + v = 1 </code>. We also have the ray equation </p>
+        <p align="middle"><pre align="middle">P = O + tD</pre></p>
+        <p> where t is the distance from the ray's origin to the intersection point P. Using this two equations, we can compute t, w, u, v using Crammer's rule. To check if intersection exists, I checked if u, v are between [0, 1], u + v <= 1 and t within [min_t, max_t]. </p>
+
+        <h3> Sphere intersect </h3>
+        <p> I used the equations from lecture slides to detect sphere intersect as below: </p>
+        <p align="middle"><pre align="middle">a = ray.d * ray.d</pre></p>
+        <p align="middle"><pre align="middle">b = 2 * (ray.o - sphere.center) * ray.d</pre></p>
+        <p align="middle"><pre align="middle">c = (ray.o - sphere.center)^2 - R^2</pre></p>
+        <p align="middle"><pre align="middle">t = (-b +/- sqrt(b^2 - 4ac)) / 2a</pre></p>
+        <p> Let <code> delta = b^2 - 4ac</code>, I use the value of delta to check if theres intersect. </p>
+        <p align="middle"><pre align="middle">no intersection if delta < 0</pre></p>
+        <p align="middle"><pre align="middle">one intersection if delta = 0</pre></p>
+        <p align="middle"><pre align="middle">two intersections if delta > 0</pre></p>
+        <p> I also set the distance from ray's origin to intersection P as min(t0, t1) if there are two intersections. No intersection can also happen when t is not within the range of [min_t, max_t]. Below is the scene from part 1 </p>
+
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                    <img src="part1/CBspheres_lambertian_part1.png" width="480px" />
+                    <figcaption align="middle">Fig 2. CBspheres_lambertian_part1</figcaption>
+                </tr>
+            </table>
+        </div>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                    <img src="coil.png" width="480px" />
+                    <figcaption align="middle">Fig 2. CBspheres_lambertian_part1</figcaption>
+                </tr>
+            </table>
+        </div>
+        <div align="center">
+            <table style="width=100%">
+                <tr>
+                    <td align="middle">
+                    <img src="dragon.png" width="480px" />
+                    <figcaption align="middle">Fig 2. CBspheres_lambertian_part1</figcaption>
+                </tr>
+            </table>
+        </div>
+
+
+
+    <h2 align="middle">Part 2: Bounding Volume Hierarchy</h2>
+    <h3> Constructing BVH -- Acceleration structure </h3>
+    <p> BVH is a square box structure allows us to test ray intersection with axis-aligned planes rather then evey single primitives in the scene. First, I pick the greatest dimension in to split the object by comparing x, y, z axis values. Let say we choose x here. I then split the primitives into two vectors where prims1 has primitive's centroid less than centroid_box on x, otherwise storing in prims2. I recursive call construct_bvh on the left and right node to split up the primitives. When the case that all the primitives assign to the same vector, I split them in half by their midpoint on x. This prevents the infinite recursive call on the same primitive vector.  </p>
+
+    <h3 align="middle">Below are the process of spliting the bounding volumne.</h3>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part2task1/cow/1.png" align="middle" width="400px"/>
+          </td>
+          <td>
+            <img src="part2task1/cow/2.png" align="middle" width="400px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part2task1/cow/3.png" align="middle" width="400px"/>
+          </td>
+          <td>
+            <img src="part2task1/cow/4.png" align="middle" width="400px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part2task1/cow/5.png" align="middle" width="400px"/>
+          </td>
+          <td>
+            <img src="part2task1/cow/6.png" align="middle" width="400px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <h2>Intersecting BBox</h2>
+    <p> We use the bounding box to test if a ray intersects. I take the maximum of the min x, y, z as tmin, and take the minimum of the max x, y, z as tmax. There is no intersection when it is one of the below cases: </p>
+    <p align="middle"><pre align="middle">tmin > tmax</pre></p>
+    <p align="middle"><pre align="middle">tmin > ray.max_t</pre></p>
+    <p align="middle"><pre align="middle">tmax < ray.min_t</pre></p>
+    <p> I had a hard time debugging on this function. Because I understood the concept, but when I assigned tmin and tmax, I didn't check tmin is actually less then tmax. I kept getting black screen. Until I realized that I never compare these two values. I fixed it by swaping the two values. </p>
+
+
+    <h2> Intersecting BVHAccel </h2>
+    <p> We avoid checking every primitive in the scene by checking if the ray hits the BVH's bounding box. </p>
+    <p> If it does intersect with bounding box, we check if it is a leaf node. If it is, we just need to check every primitives in the box and see if there is a hit. </p>
+    <p> If it is not a leaf node, we traverse the left and right node by recursively calling BVH intersect function on its children. Below are some image rendered. </p>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part2task3/wall-e.png" align="middle" width="400px"/>
+          </td>
+          <td>
+            <img src="part2task3/lucy.png" align="middle" width="400px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part2task3/maxplanck.png" align="middle" width="400px"/>
+          </td>
+          <td>
+            <img src="part2task3/beast.png" align="middle" width="400px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <h2 align="middle">Part 3: Direct Illumination</h2>
+    <p> In this part, we want to see the effect of only indirect lighting on the scene. </p>
+    <p> If a light is delta light, all the samples fall on the same location. So I just take one sample light. </p>
+    <p> If it is not a delta light, I take whatever number of samples we want by pass it in the command line. I then take the average of all the samples and added to L_out. </p>
+    <p> I create a shadow ray origins at the hit point to see if it intersect with any objects before it reaches the location of the light currently is sampling. If it does hit an object, we don't want this sample. If it doesn't intersect with any object, we calculate the bsdf value and multiplied by w_in.z divide by probability, and add the final value to the sum of the samples. For each light, I take average of all the samples that don't intersect with any object and add it to the final light_out. </p>
+    <p> Below are some pictures rendered with direct illumination: </p>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part3/dragon.png" align="middle" width="400px"/>
+          </td>
+          <td>
+            <img src="part3/bunny.png" align="middle" width="400px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <h3> Direct lighting rendered with different light rays</h3>
+    <p> From below pictures, we can see that the higher the light rays, the softer the shadows are. It is very noise with 1 light ray. So it is expected that it will look way softer if I run 1024 light ray. </p>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part3/1sampledifferentlightrays/dragon_s=1_l=1.png" align="middle" width="400px"/>
+            <figcaption align="middle">1 light ray, 1 sample/pixel</figcaption>
+          </td>
+          <td>
+            <img src="part3/1sampledifferentlightrays/dragon_1_4.png" align="middle" width="400px"/>
+            <figcaption align="middle">4 light ray, 1 sample/pixel</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part3/1sampledifferentlightrays/dragon_1_16.png" align="middle" width="400px"/>
+            <figcaption align="middle">16 light ray, 1 sample/pixel</figcaption>
+          </td>
+          <td>
+            <img src="part3/1sampledifferentlightrays/dragon_1_64.png" align="middle" width="400px"/>
+            <figcaption align="middle">64 light ray, 1 sample/pixel</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+
+    <h2 align="middle">Part 4: Indirect Illumination</h2>
+    <p> Indirect illumination is similar to direct illumination.  </p>
+    <p> In direct lighting from the previous part, we don't see the color from the walls on spheres because there is no direct light from the wall to the spheres. But in indirect light, we see slight pink and blue color from the walls on the spheres. These are indirect lights. They are not as strong as the light source because part of the energy lost in the transaction.  </p>
+    <p> The difference in the implementation here compare to direct lighting is that, we sample the BSDF at the hit point and recursively trace a ray in that sample direction. We also introduce two new constants here. They are there to make sure rays are not terminated too early. The higher those two constants are, the more noise the render has. I tried with high constants like 10 or 20, but it doesn't seem like much difference. It may require a very large constant to see the difference.  </p>
+
+    <h3> Both direct and indirect illumination</h3>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/direct_&_indirect_s=64_l=16_m=5/bunny=indir+dir.png" align="middle" width="400px"/>
+          </td>
+          <td>
+            <img src="part4/direct_&_indirect_s=64_l=16_m=5/spheres=indir+dir.png" align="middle" width="400px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <h3> Comparison of indirect and direct lighting </h3>
+    <p> You can see there are more noise in the image when indirect light is included. But there aren't much difference between indirect and the one with both. </p>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/part4_only_direct_s=64_l=16_m=5/CBspheres_s=1024.png" align="middle" width="400px"/>
+            <figcaption align="middle">only direct</figcaption>
+          </td>
+          <td>
+            <img src="part4/direct_&_indirect_s=64_l=16_m=5/spheres=indir+dir.png" align="middle" width="400px"/>
+            <figcaption align="middle"> direct & indirect</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/only_indirect.png" align="middle" width="400px"/>
+            <figcaption align="middle">only indirect</figcaption>
+            <figcaption align="middle">I was running out of time, so I wasn't able to get the one with 1024 samples/pixel.... but here is the 64 samples/pixel.</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <h3> Different max_ray_depth on CBbunny.dae with sample/pixel = 1, light ray = 4</h3>
+    <p> You can see a big difference between m = 0 and m = 100. It is way brighter in m = 100. Because there are more lights reflected in the scene, so it makes the scene brighter. </p>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/CBbunny_max_ray_depth/CBbunny_m=0.png" align="middle" width="400px"/>
+            <figcaption align="middle">max_ray_depth = 0</figcaption>
+          </td>
+          <td>
+            <img src="part4/CBbunny_max_ray_depth/CBbunny_m=1.png" align="middle" width="400px"/>
+            <figcaption align="middle">max_ray_depth = 1</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/CBbunny_max_ray_depth/CBbunny_m=2.png" align="middle" width="400px"/>
+            <figcaption align="middle">max_ray_depth = 2</figcaption>
+          </td>
+          <td>
+            <img src="part4/CBbunny_max_ray_depth/CBbunny_m=3.png" align="middle" width="400px"/>
+            <figcaption align="middle">max_ray_depth = 3</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/CBbunny_max_ray_depth/CBbunny_m=100.png" align="middle" width="400px"/>
+            <figcaption align="middle">max_ray_depth = 100</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <h3> rendered views with various sample-per-pixel rates </h3>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/part4_CBspheres_lambertian_m=0_l=4_different_sample_per_pixel/CBbunny4_s=1_l=4_m=0.png" align="middle" width="400px"/>
+            <figcaption align="middle"> sample/pixel = 1</figcaption>
+          </td>
+          <td>
+            <img src="part4/part4_CBspheres_lambertian_m=0_l=4_different_sample_per_pixel/CBbunny4_s=2_l=4_m=0.png" align="middle" width="400px"/>
+            <figcaption align="middle">sample/pixel = 2</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/part4_CBspheres_lambertian_m=0_l=4_different_sample_per_pixel/CBbunny4_s=4_l=4_m=0.png" align="middle" width="400px"/>
+            <figcaption align="middle">sample/pixel = 4</figcaption>
+          </td>
+          <td>
+            <img src="part4/part4_CBspheres_lambertian_m=0_l=4_different_sample_per_pixel/CBbunny4_s=8_l=4_m=0.png" align="middle" width="400px"/>
+            <figcaption align="middle">sample/pixel = 8</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/part4_CBspheres_lambertian_m=0_l=4_different_sample_per_pixel/CBbunny4_s=16_l=4_m=0.png" align="middle" width="400px"/>
+            <figcaption align="middle">sample/pixel = 16</figcaption>
+          </td>
+          <td>
+            <img src="part4/part4_CBspheres_lambertian_m=0_l=4_different_sample_per_pixel/CBbunny4_s=64_l=4_m=0.png" align="middle" width="400px"/>
+            <figcaption align="middle">sample/pixel = 64</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part4/part4_CBspheres_lambertian_m=0_l=4_different_sample_per_pixel/CBbunny_s=1024.png" align="middle" width="400px"/>
+            <figcaption align="middle">sample/pixel = 1024</figcaption>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+
+
+
+    <h2 align="middle"> Part 5: Adaptive Sampling </h2>
+    <p> In this part, I implemented adaptive sampling. Its very straight forward, its mostly about math. I check if I is less then or equal to maxTolerance * mu. If it is, the pixel has converged and I break the loop. If not, it continue to get more samples. I made a mistake here at the beginning, which causes me to debug for hours... I used the num_samples as n in the calculation, while I supposed to use the actual number of samples as n. I fixed it by creating a count variable which I increment by 1 in each iteration called. </p>
+    <h3> Below is rendered in 2048 samples/pixel + max_ray_depth of 5 </h3>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part5/bunny.png" align="middle" width="700px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <table>
+        <tr>
+          <td>
+            <img src="part5/bunny_rate.png" align="middle" width="700px"/>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+
+
+
+
+
+
+
+
+</div>
+</body>
+</html>
+
+
+
+
